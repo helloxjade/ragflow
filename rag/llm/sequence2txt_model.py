@@ -58,6 +58,93 @@ class GPTSeq2txt(Base):
         self.client = OpenAI(api_key=key, base_url=base_url)
         self.model_name = model_name
 
+class OpenAIAPIAudioSeq2txt(Base):
+    _FACTORY_NAME = ["VLLM", "OpenAI-API-Compatible"]
+
+    def __init__(self, key, model_name, base_url, **kwargs):
+        if not base_url:
+            raise ValueError("url cannot be None")
+        api_key = key
+        audio_mode = "audio_url"
+        asr_prompt = "You are a speech-to-text transcription assistant. Transcribe the audio content verbatim. Output only the exact words spoken in the audio, preserving the original language. Do not add any explanation, description, or commentary."
+        if isinstance(key, str):
+            try:
+                parsed_key = json.loads(key)
+                if isinstance(parsed_key, dict):
+                    api_key = parsed_key.get("api_key", api_key)
+                    audio_mode = parsed_key.get("audio_mode", audio_mode)
+                    asr_prompt = parsed_key.get("asr_prompt", asr_prompt)
+            except Exception:
+                pass
+        base_url = base_url.rstrip("/")
+        if not base_url.endswith("v1"):
+            base_url = f"{base_url}/v1"
+        self.base_url = base_url
+        self.api_key = api_key
+        self.model_name = model_name.split("___")[0]
+        self.audio_mode = audio_mode
+        self.asr_prompt = asr_prompt
+        self.extra_body = kwargs.get("extra_body", {})
+
+    def transcription(self, audio_path, **kwargs):
+        with open(audio_path, "rb") as audio_file:
+            audio_bytes = audio_file.read()
+        ext = os.path.splitext(audio_path)[1].lower().lstrip(".")
+        allowed_formats = {"wav", "mp3", "flac", "m4a", "ogg"}
+        audio_format = ext if ext in allowed_formats else "wav"
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        audio_data_url = f"data:audio/{audio_format};base64,{audio_b64}"
+        audio_mode = self.audio_mode
+        if audio_mode not in {"audio_url", "input_audio"}:
+            audio_mode = "audio_url"
+        if audio_mode == "input_audio":
+            audio_item = {
+                "type": "input_audio",
+                "input_audio": {"data": audio_b64, "format": audio_format},
+            }
+        else:
+            audio_item = {
+                "type": "audio_url",
+                "audio_url": {"url": audio_data_url},
+            }
+        messages = []
+        if self.asr_prompt:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": self.asr_prompt}],
+                }
+            )
+        messages.append({"role": "user", "content": [audio_item]})
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "modalities": ["text"],
+        }
+        if self.extra_body:
+            payload.update(self.extra_body)
+        headers = {
+            "accept": "application/json",
+            "content-type": "application/json",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        response = requests.post(
+            url=f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+        )
+        body = response.json()
+        if response.status_code != 200:
+            error = body.get("error", {})
+            message = error.get("message", body)
+            return f"**ERROR**: {message}", 0
+        text = body["choices"][0]["message"]["content"].strip()
+        usage = body.get("usage")
+        token_count = usage.get("total_tokens") if usage else num_tokens_from_string(text)
+        return text, token_count
+
+
 
 class QWenSeq2txt(Base):
     _FACTORY_NAME = "Tongyi-Qianwen"

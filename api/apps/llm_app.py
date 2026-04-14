@@ -208,7 +208,9 @@ async def add_llm():
     msg = ""
     mdl_nm = llm["llm_name"].split("___")[0]
     extra = {"provider": factory}
-    model_type = llm["model_type"]
+    # Support composite model_type (e.g. "chat,image2text" for multimodal models).
+    # Use the first type in the list for validation, store the full string in DB.
+    model_type = llm["model_type"].split(",")[0].strip()
     model_api_key = llm["api_key"]
     model_base_url = llm.get("api_base", "")
     match model_type:

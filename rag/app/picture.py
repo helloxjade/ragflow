@@ -51,6 +51,7 @@ def chunk(filename, binary, tenant_id, lang, callback=None, **kwargs):
                 }
             )
             cv_mdl = LLMBundle(tenant_id, llm_type=LLMType.IMAGE2TEXT, lang=lang)
+            doc_storage_url = kwargs.get('doc_storage_url', None)
             ans = asyncio.run(
                 cv_mdl.async_chat(system="", history=[], gen_conf={}, video_bytes=binary, filename=filename))
             callback(0.8, "CV LLM respond: %s ..." % ans[:32])

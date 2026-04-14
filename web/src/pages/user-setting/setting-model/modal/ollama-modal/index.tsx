@@ -3,11 +3,14 @@ import { useTranslate } from '@/hooks/common-hooks';
 import { IModalProps } from '@/interfaces/common';
 import { IAddLlmRequestBody } from '@/interfaces/request/llm';
 import {
+  Checkbox,
+  Col,
   Flex,
   Form,
   Input,
   InputNumber,
   Modal,
+  Row,
   Select,
   Space,
   Switch,
@@ -22,6 +25,8 @@ type FieldType = IAddLlmRequestBody & {
 };
 
 const { Option } = Select;
+
+const isMultiSelectFactory = llmFactory === LLMFactory.VLLM;
 
 const llmFactoryToUrlMap = {
   [LLMFactory.Ollama]:
@@ -64,10 +69,20 @@ const OllamaModal = ({
 
   const handleOk = async () => {
     const values = await form.validateFields();
-    const modelType =
-      values.model_type === 'chat' && values.vision
-        ? 'image2text'
-        : values.model_type;
+
+    let modelType: string;
+
+    if (isMultiSelectFactory) {
+      // Multi-select: model_type is an array, join with comma
+      const types = values.model_type as unknown as string[];
+      modelType = types.join(',');
+    } else {
+      // Single-select: handle vision toggle
+      modelType =
+        values.model_type === 'chat' && values.vision
+          ? 'image2text'
+          : values.model_type;
+    }
 
     const data = {
       ...omit(values, ['vision']),
@@ -174,16 +189,28 @@ const OllamaModal = ({
         <Form.Item<FieldType>
           label={t('modelType')}
           name="model_type"
-          initialValue={'embedding'}
+          initialValue={isMultiSelectFactory ? ['chat'] : 'embedding'}
           rules={[{ required: true, message: t('modelTypeMessage') }]}
         >
-          <Select placeholder={t('modelTypeMessage')}>
-            {getOptions(llmFactory).map((option) => (
-              <Option key={option.value} value={option.value}>
-                {option.label}
-              </Option>
-            ))}
-          </Select>
+          {isMultiSelectFactory ? (
+            <Checkbox.Group style={{ width: '100%' }}>
+              <Row gutter={[8, 8]}>
+                {getOptions(llmFactory).map((option) => (
+                  <Col span={8} key={option.value}>
+                    <Checkbox value={option.value}>{option.label}</Checkbox>
+                  </Col>
+                ))}
+              </Row>
+            </Checkbox.Group>
+          ) : (
+            <Select placeholder={t('modelTypeMessage')}>
+              {getOptions(llmFactory).map((option) => (
+                <Option key={option.value} value={option.value}>
+                  {option.label}
+                </Option>
+              ))}
+            </Select>
+          )}
         </Form.Item>
         <Form.Item<FieldType>
           label={t(llmFactory === 'Xinference' ? 'modelUid' : 'modelName')}
@@ -248,19 +275,21 @@ const OllamaModal = ({
           </Form.Item>
         )}
 
-        <Form.Item noStyle dependencies={['model_type']}>
-          {({ getFieldValue }) =>
-            getFieldValue('model_type') === 'chat' && (
-              <Form.Item
-                label={t('vision')}
-                valuePropName="checked"
-                name={'vision'}
-              >
-                <Switch />
-              </Form.Item>
-            )
-          }
-        </Form.Item>
+        {!isMultiSelectFactory && (
+          <Form.Item noStyle dependencies={['model_type']}>
+            {({ getFieldValue }) =>
+              getFieldValue('model_type') === 'chat' && (
+                <Form.Item
+                  label={t('vision')}
+                  valuePropName="checked"
+                  name={'vision'}
+                >
+                  <Switch />
+                </Form.Item>
+              )
+            }
+          </Form.Item>
+        )}
       </Form>
     </Modal>
   );

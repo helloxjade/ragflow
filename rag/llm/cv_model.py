@@ -269,6 +269,7 @@ class QWenCV(GptV4):
                     "role": "user",
                     "content": [
                         {
+                            "type": "video",
                             "video": video_path,
                             "fps": 2,
                         },
@@ -453,14 +454,125 @@ class OpenAI_APICV(GptV4):
     _FACTORY_NAME = ["VLLM", "OpenAI-API-Compatible"]
 
     def __init__(self, key, model_name, lang="Chinese", base_url="", **kwargs):
+        import httpx
         if not base_url:
             raise ValueError("url cannot be None")
         base_url = urljoin(base_url, "v1")
-        self.client = OpenAI(api_key=key, base_url=base_url)
-        self.async_client = AsyncOpenAI(api_key=key, base_url=base_url)
+        self.client = OpenAI(api_key=key, base_url=base_url, timeout=httpx.Timeout(300.0, connect=30.0),)
+        self.async_client = AsyncOpenAI(api_key=key, base_url=base_url, timeout=httpx.Timeout(300.0, connect=30.0))
         self.model_name = model_name.split("___")[0]
         self.lang = lang
         Base.__init__(self, **kwargs)
+
+    def chat(self, system, history, gen_conf,  **kwargs):  
+        images = kwargs.get("images", None)
+        video_bytes = kwargs.get("video_bytes", None)
+        filename = kwargs.get("filename", "")
+        if video_bytes:  
+            try:  
+                # 处理视频  
+                video_result = self._process_video_vllm(system,history,video_bytes, filename)  
+                return video_result  
+            except Exception as e:  
+                return "**ERROR**: " + str(e), 0  
+          
+        # 处理图像或普通文本  
+        return super().chat(system, history, gen_conf, images, **kwargs)  
+  
+    def _build_qwen_omni_messages(self, system, history, video_data_url=None):
+        """
+        构建适配Qwen2.5-Omni VLLM的消息格式
+        兼容原有system/history逻辑，适配视频格式要求
+        https://github.com/fyabc/vllm/blob/qwen2_omni_public/examples/offline_inference/qwen2_5_omni/end2end.py
+        """
+        messages = []
+        
+        # 1. 处理system角色（转为Qwen要求的列表格式）
+        if system:
+            messages.append({
+                "role": "system",
+                "content": [{"type": "text", "text": system}]
+            })
+        
+        # 2. 处理对话历史，追加视频到最后一条user消息
+        video_added = False
+        for h in history:
+            role = h["role"]
+            content = h["content"]
+            
+            # 初始化消息结构
+            msg = {"role": role}
+            
+            # 处理user角色（支持文本+视频混合）
+            if role == "user" and not video_added:
+                # 标准化content格式为列表
+                if isinstance(content, str):
+                    content_list = [{"type": "text", "text": content}]
+                elif isinstance(content, list) and all(isinstance(item, dict) for item in content):
+                    content_list = content
+                else:
+                    content_list = [{"type": "text", "text": str(content)}]
+                
+                # 追加视频（仅最后一条user消息）
+                if video_data_url and h == history[-1]:
+                    content_list.append({
+                        "type": "video_url",
+                        "video_url": {"url": video_data_url}
+                    })
+                    video_added = True
+                
+                msg["content"] = content_list
+            
+            # 处理assistant角色（转为列表格式）
+            elif role == "assistant":
+                if isinstance(content, str):
+                    msg["content"] = [{"type": "text", "text": content}]
+                else:
+                    msg["content"] = content
+            
+            # 其他角色沿用原有格式
+            else:
+                msg["content"] = content
+            
+            messages.append(msg)
+        
+        # 兜底：无user消息时创建纯视频消息
+        if video_data_url and not video_added:
+            messages.append({
+                "role": "user",
+                "content": [{"type": "video_url", "video_url": {"url": video_data_url}}]
+            })
+        
+        return messages
+
+    def _process_video_vllm(self, system, history, video_bytes, filename):
+        """使用VLLM接口处理视频（适配Qwen2.5-Omni格式）"""
+        import time as _time
+        # 1. 视频字节转Base64 DataURL
+        video_suffix = Path(filename).suffix or ".mp4"
+        video_b64 = base64.b64encode(video_bytes).decode("utf-8")
+        video_data_url = f"data:video/{video_suffix[1:]};base64,{video_b64}"
+        logging.info(f"[VLLM Video] file={filename}, size={len(video_bytes)} bytes, base64_len={len(video_b64)}, model={self.model_name}")
+        
+        # 2. 构建适配Qwen2.5-Omni的消息
+        messages = self._build_qwen_omni_messages(system, history, video_data_url)
+        
+        # 3. 调用VLLM接口
+        try:
+            start_ts = _time.time()
+            logging.info(f"[VLLM Video] Sending request to vLLM...")
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=messages,
+                extra_body=self.extra_body,
+            )
+            elapsed = _time.time() - start_ts
+            logging.info(f"[VLLM Video] Response received in {elapsed:.1f}s, tokens={response.usage.total_tokens}")
+            return response.choices[0].message.content.strip(), response.usage.total_tokens
+        except Exception as e:
+            elapsed = _time.time() - start_ts
+            logging.error(f"[VLLM Video] Request failed after {elapsed:.1f}s: {e}")
+            return "**ERROR**: " + str(e), 0
 
 
 class TogetherAICV(GptV4):

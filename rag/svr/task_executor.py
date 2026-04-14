@@ -70,7 +70,7 @@ from common.signal_utils import start_tracemalloc_and_snapshot, stop_tracemalloc
 from common.exceptions import TaskCanceledException
 from common import settings
 from common.constants import PAGERANK_FLD, TAG_FLD, SVR_CONSUMER_GROUP_NAME
-
+from datetime import timedelta
 BATCH_SIZE = 64
 
 FACTORY = {
@@ -230,6 +230,9 @@ async def collect():
 async def get_storage_binary(bucket, name):
     return await asyncio.to_thread(settings.STORAGE_IMPL.get, bucket, name)
 
+async def get_storage_url(bucket, name, expire):
+    return await trio.to_thread.run_sync(lambda: settings.STORAGE_IMPL.get_presigned_url(bucket, name,expire))
+
 
 @timeout(60 * 80, 1)
 async def build_chunks(task, progress_callback):
@@ -243,6 +246,7 @@ async def build_chunks(task, progress_callback):
         st = timer()
         bucket, name = File2DocumentService.get_storage_address(doc_id=task["doc_id"])
         binary = await get_storage_binary(bucket, name)
+        doc_storage_url = await get_storage_url(bucket,name,timedelta(days=1))
         logging.info("From minio({}) {}/{}".format(timer() - st, task["location"], task["name"]))
     except TimeoutError:
         progress_callback(-1, "Internal server error: Fetch file from minio timeout. Could you try it again.")
@@ -270,6 +274,7 @@ async def build_chunks(task, progress_callback):
                 kb_id=task["kb_id"],
                 parser_config=task["parser_config"],
                 tenant_id=task["tenant_id"],
+                doc_storage_url=doc_storage_url)
             )
         logging.info("Chunking({}) {}/{} done".format(timer() - st, task["location"], task["name"]))
     except TaskCanceledException:

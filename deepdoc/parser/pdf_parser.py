@@ -957,6 +957,13 @@ class RAGFlowPdfParser:
                     i += 1
                     continue
 
+                # Table boxes already carry row/column metadata for downstream
+                # reconstruction. Merging them vertically here can collapse
+                # adjacent rows into one broken table record.
+                if b.get("layout_type") == "table" or b_.get("layout_type") == "table":
+                    i += 1
+                    continue
+
                 if b_["top"] - b["bottom"] > mh * 1.5:
                     i += 1
                     continue

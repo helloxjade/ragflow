@@ -166,6 +166,22 @@ class TestMarkdownElementExtractorTables:
 
 
 @pytest.mark.p2
+class TestMarkdownTableDedup:
+    def test_separate_tables_removes_pipe_table_from_text_sections(self, markdown_parser_module):
+        """Ensure separated pipe tables do not leak back into text chunks."""
+        text = "Before\n\n| Name | Value |\n| --- | --- |\n| A | 1 |\n| B | 2 |\n\nAfter"
+
+        parser = markdown_parser_module.RAGFlowMarkdownParser()
+        remainder, tables = parser.extract_tables_and_remainder(f"{text}\n", separate_tables=True)
+        sections = markdown_parser_module.MarkdownElementExtractor(remainder).extract_elements(include_meta=False)
+
+        assert len(tables) == 1
+        assert "| Name | Value |" not in remainder
+        assert len(sections) == 1
+        assert "Before" in sections[0]
+        assert "After" in sections[0]
+        assert "| Name | Value |" not in sections[0]
+
 class TestMarkdownElementExtractorDelimiterHeaders:
     def test_custom_delimiter_merges_consecutive_lone_headers_with_body(self, markdown_element_extractor):
         text = "# Title\n## Intro\nBody paragraph"

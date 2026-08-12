@@ -255,7 +255,11 @@ def _load_chunk_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "common.tag_feature_utils", tag_feature_utils_mod)
 
     pagination_utils_mod = ModuleType("api.utils.pagination_utils")
-    pagination_utils_mod.validate_rest_api_page_size = lambda *_args, **_kwargs: (1, 30)
+    pagination_utils_mod.DEFAULT_PAGE = 1
+    pagination_utils_mod.DEFAULT_PAGE_SIZE = 30
+    pagination_utils_mod.validate_rest_api_ids = lambda ids, *_args, **_kwargs: ids
+    pagination_utils_mod.validate_rest_api_page = lambda page: int(page)
+    pagination_utils_mod.validate_rest_api_page_size = lambda page_size: int(page_size)
     monkeypatch.setitem(sys.modules, "api.utils.pagination_utils", pagination_utils_mod)
 
     reference_metadata_utils_mod = ModuleType("api.utils.reference_metadata_utils")
@@ -265,8 +269,8 @@ def _load_chunk_module(monkeypatch):
 
     misc_utils_mod = ModuleType("common.misc_utils")
 
-    async def _thread_pool_exec(func):
-        return func()
+    async def _thread_pool_exec(func, *args, **kwargs):
+        return func(*args, **kwargs)
 
     misc_utils_mod.thread_pool_exec = _thread_pool_exec
     monkeypatch.setitem(sys.modules, "common.misc_utils", misc_utils_mod)
@@ -715,6 +719,54 @@ def test_restful_chunk_add_update_and_switch_unit(monkeypatch):
     res = _run(_route_core(module.switch_chunks)("tenant-1", "kb-1", "doc-1"))
     assert res["code"] == 0, res
     assert res["data"] is True, res
+
+
+@pytest.mark.p2
+def test_restful_chunk_embedding_and_writes_use_executor(monkeypatch):
+    module = _load_chunk_api_module(monkeypatch)
+    module.request = SimpleNamespace(args={}, headers={})
+    running_in_executor = False
+    executor_calls = []
+
+    async def _thread_pool_exec(func, *args, **kwargs):
+        nonlocal running_in_executor
+        executor_calls.append(func.__name__)
+        running_in_executor = True
+        try:
+            return func(*args, **kwargs)
+        finally:
+            running_in_executor = False
+
+    class _ExecutorCheckedLLMBundle:
+        def encode(self, _inputs):
+            assert running_in_executor
+            return [_Vec([1.0, 2.0]), _Vec([3.0, 4.0])], 9
+
+    monkeypatch.setattr(module, "thread_pool_exec", _thread_pool_exec)
+    monkeypatch.setattr(module.TenantLLMService, "model_instance", lambda _config: _ExecutorCheckedLLMBundle())
+
+    original_insert = module.settings.docStoreConn.insert
+    original_update = module.settings.docStoreConn.update
+
+    def _insert(*args, **kwargs):
+        assert running_in_executor
+        return original_insert(*args, **kwargs)
+
+    def _update(*args, **kwargs):
+        assert running_in_executor
+        return original_update(*args, **kwargs)
+
+    monkeypatch.setattr(module.settings.docStoreConn, "insert", _insert)
+    monkeypatch.setattr(module.settings.docStoreConn, "update", _update)
+
+    _set_request_json(monkeypatch, module, {"content": "chunk"})
+    add_res = _run(_route_core(module.add_chunk)("tenant-1", "kb-1", "doc-1"))
+    assert add_res["code"] == 0, add_res
+
+    _set_request_json(monkeypatch, module, {"content": "updated chunk"})
+    update_res = _run(_route_core(module.update_chunk)("tenant-1", "kb-1", "doc-1", "chunk-1"))
+    assert update_res["code"] == 0, update_res
+    assert executor_calls == ["encode", "_insert", "encode", "_update"]
 
 
 @pytest.mark.p2

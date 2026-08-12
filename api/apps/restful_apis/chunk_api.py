@@ -1035,10 +1035,10 @@ async def add_chunk(tenant_id, dataset_id, document_id):
     embd_id = DocumentService.get_embd_id(document_id)
     model_config = resolve_model_config(dataset_tenant_id, LLMType.EMBEDDING.value, embd_id)
     embd_mdl = TenantLLMService.model_instance(model_config)
-    v, c = embd_mdl.encode([doc.name, req["content"] if not d["question_kwd"] else "\n".join(d["question_kwd"])])
+    v, c = await thread_pool_exec(embd_mdl.encode, [doc.name, req["content"] if not d["question_kwd"] else "\n".join(d["question_kwd"])])
     v = 0.1 * v[0] + 0.9 * v[1]
     d[f"q_{len(v)}_vec"] = v.tolist()
-    settings.docStoreConn.insert([d], search.index_name(dataset_tenant_id), dataset_id)
+    await thread_pool_exec(settings.docStoreConn.insert, [d], search.index_name(dataset_tenant_id), dataset_id)
 
     DocumentService.increment_chunk_num(doc.id, doc.kb_id, c, 1, 0)
     key_mapping = {
@@ -1189,15 +1189,16 @@ async def update_chunk(tenant_id, dataset_id, document_id, chunk_id):
         q, a = rmPrefix(arr[0]), rmPrefix(arr[1])
         d = beAdoc(d, arr[0], arr[1], not any([rag_tokenizer.is_chinese(t) for t in q + a]))
 
-    v, _ = embd_mdl.encode(
+    v, _ = await thread_pool_exec(
+        embd_mdl.encode,
         [
             doc.name,
             d["content_with_weight"] if not d.get("question_kwd") else "\n".join(d["question_kwd"]),
-        ]
+        ],
     )
     v = 0.1 * v[0] + 0.9 * v[1] if doc.parser_id != ParserType.QA else v[1]
     d[f"q_{len(v)}_vec"] = v.tolist()
-    settings.docStoreConn.update({"id": chunk_id}, d, search.index_name(dataset_tenant_id), dataset_id)
+    await thread_pool_exec(settings.docStoreConn.update, {"id": chunk_id}, d, search.index_name(dataset_tenant_id), dataset_id)
     return get_result()
 
 
